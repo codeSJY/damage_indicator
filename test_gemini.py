@@ -3,14 +3,13 @@ import json
 import time
 import csv
 import httpx
-import base64
 from pathlib import Path
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
-genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
-model = genai.GenerativeModel("gemini-1.5-flash")
+client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
+MODEL = "gemini-2.0-flash"
 
-S3_BASE = "https://returneeds-prod.s3.amazonaws.com/"
 PROMPT = (
     "이 검품 이미지에 흰색 원형 다이얼 마커가 있나요? "
     "마커는 흰색 원판 중앙에 빨간 링이 있고 주변에 한국어 텍스트가 방사형으로 적힌 원형 도구입니다. "
@@ -18,14 +17,16 @@ PROMPT = (
 )
 
 def analyze_image(row):
-    url = S3_BASE + row["thumbnail"]
+    url = "https://returneeds-prod.s3.amazonaws.com/" + row["thumbnail"]
     try:
         img_bytes = httpx.get(url, timeout=15).content
-        img_b64 = base64.b64encode(img_bytes).decode()
-        response = model.generate_content([
-            {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}},
-            PROMPT,
-        ])
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=[
+                types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
+                PROMPT,
+            ],
+        )
         answer = response.text.strip().upper()
         has_marker = answer.startswith("YES")
         return {**row, "has_marker": has_marker, "answer": answer, "error": ""}
@@ -39,7 +40,6 @@ def main():
     results_path = Path("results.csv")
     done_keys = set()
 
-    # 이어쓰기 지원: 이미 처리된 항목 건너뜀
     if results_path.exists():
         with open(results_path) as f:
             for r in csv.DictReader(f):
@@ -61,19 +61,22 @@ def main():
             writer.writerow(result)
             f.flush()
 
-            marker_str = "✓" if result["has_marker"] else "-"
+            marker_str = "✓" if result["has_marker"] else ("-" if not result["error"] else "!")
             print(f"[{i+1}/{len(remaining)}] {row['brand']} {row['period']} {row['item_code']} → {marker_str}")
 
             # 무료 티어 rate limit (15 RPM) 대응
             if (i + 1) % 14 == 0:
-                time.sleep(60)
+                time.sleep(62)
 
-    # 요약 출력
     print("\n=== 마커 사용률 요약 ===")
     from collections import defaultdict
     summary = defaultdict(lambda: {"total": 0, "marker": 0})
+    errors = 0
     with open(results_path, encoding="utf-8") as f:
         for r in csv.DictReader(f):
+            if r["error"]:
+                errors += 1
+                continue
             key = (r["brand"], r["period"])
             summary[key]["total"] += 1
             if r["has_marker"] == "True":
@@ -82,6 +85,8 @@ def main():
     for (brand, period), v in sorted(summary.items()):
         rate = v["marker"] / v["total"] * 100 if v["total"] else 0
         print(f"{brand} {period}: {v['marker']}/{v['total']}건 ({rate:.1f}%)")
+    if errors:
+        print(f"오류: {errors}건")
 
 if __name__ == "__main__":
     main()
