@@ -34,7 +34,8 @@ def analyze_image(row):
         return {**row, "has_marker": False, "answer": "", "error": str(e)}
 
 def main():
-    with open("image_list.json") as f:
+    input_file = os.environ.get("IMAGE_LIST", "image_list.json")
+    with open(input_file) as f:
         rows = json.load(f)
 
     results_path = Path("results.csv")

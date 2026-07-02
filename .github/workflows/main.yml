@@ -2,6 +2,15 @@ name: Run damage indicator script
 
 on:
   workflow_dispatch:
+    inputs:
+      image_list:
+        description: '분석할 이미지 목록 파일'
+        required: false
+        default: 'image_list.json'
+        type: choice
+        options:
+          - image_list_sample.json
+          - image_list.json
 
 jobs:
   run-script:
@@ -9,6 +18,7 @@ jobs:
     timeout-minutes: 360
     env:
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      IMAGE_LIST: ${{ inputs.image_list }}
     steps:
       - uses: actions/checkout@v4
 
