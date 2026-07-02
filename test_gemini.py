@@ -49,7 +49,7 @@ def main():
     remaining = [r for r in rows if (r["bulk_number"], r["item_code"]) not in done_keys]
     print(f"전체: {len(rows)}건 / 남은 작업: {len(remaining)}건")
 
-    fieldnames = ["bulk_number", "item_code", "brand", "period", "thumbnail", "has_marker", "answer", "error"]
+    fieldnames = ["bulk_number", "item_code", "brand", "reason_damaged", "thumbnail", "has_marker", "answer", "error"]
     write_header = not results_path.exists()
 
     with open(results_path, "a", newline="", encoding="utf-8") as f:
@@ -78,14 +78,13 @@ def main():
             if r["error"]:
                 errors += 1
                 continue
-            key = (r["brand"], r["period"])
-            summary[key]["total"] += 1
+            summary[r["brand"]]["total"] += 1
             if r["has_marker"] == "True":
-                summary[key]["marker"] += 1
+                summary[r["brand"]]["marker"] += 1
 
-    for (brand, period), v in sorted(summary.items()):
+    for brand, v in sorted(summary.items()):
         rate = v["marker"] / v["total"] * 100 if v["total"] else 0
-        print(f"{brand} {period}: {v['marker']}/{v['total']}건 ({rate:.1f}%)")
+        print(f"{brand}: {v['marker']}/{v['total']}건 ({rate:.1f}%)")
     if errors:
         print(f"오류: {errors}건")
 
