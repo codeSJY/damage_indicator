@@ -3,12 +3,18 @@ import json
 import time
 import csv
 import httpx
+import threading
 from pathlib import Path
 from google import genai
 from google.genai import types
 
 client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
-MODEL = "gemini-2.0-flash"
+
+# 첫 번째 모델부터 시도하고, 쿼터 오류(429/RESOURCE_EXHAUSTED)가 나면 다음 모델로 폴백.
+# 프로젝트별로 무료 티어가 모델마다 다르게 할당되는 경우(예: 특정 모델만 limit=0)를 대비.
+MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
+_dead_models = set()
+_dead_models_lock = threading.Lock()
 
 PROMPT = (
     "이 검품 이미지에 흰색 원형 다이얼 마커가 있나요? "
@@ -16,22 +22,41 @@ PROMPT = (
     "반드시 YES 또는 NO 한 단어로만 답하세요."
 )
 
+def _is_quota_error(e):
+    msg = str(e)
+    return "RESOURCE_EXHAUSTED" in msg or "429" in msg
+
 def analyze_image(row):
     url = "https://returneeds-prod.s3.amazonaws.com/" + row["thumbnail"]
     try:
         img_bytes = httpx.get(url, timeout=15).content
-        response = client.models.generate_content(
-            model=MODEL,
-            contents=[
-                types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
-                PROMPT,
-            ],
-        )
-        answer = response.text.strip().upper()
-        has_marker = answer.startswith("YES")
-        return {**row, "has_marker": has_marker, "answer": answer, "error": ""}
     except Exception as e:
-        return {**row, "has_marker": False, "answer": "", "error": str(e)}
+        return {**row, "has_marker": False, "answer": "", "error": f"download failed: {e}", "model_used": ""}
+
+    last_err = None
+    for model in MODELS:
+        with _dead_models_lock:
+            if model in _dead_models:
+                continue
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=[
+                    types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
+                    PROMPT,
+                ],
+            )
+            answer = response.text.strip().upper()
+            has_marker = answer.startswith("YES")
+            return {**row, "has_marker": has_marker, "answer": answer, "error": "", "model_used": model}
+        except Exception as e:
+            last_err = e
+            if _is_quota_error(e):
+                with _dead_models_lock:
+                    _dead_models.add(model)
+            continue
+
+    return {**row, "has_marker": False, "answer": "", "error": str(last_err), "model_used": ""}
 
 def main():
     input_file = os.environ.get("IMAGE_LIST", "image_list.json")
@@ -49,7 +74,7 @@ def main():
     remaining = [r for r in rows if (r["bulk_number"], r["item_code"]) not in done_keys]
     print(f"전체: {len(rows)}건 / 남은 작업: {len(remaining)}건")
 
-    fieldnames = ["bulk_number", "item_code", "brand", "reason_damaged", "thumbnail", "has_marker", "answer", "error"]
+    fieldnames = ["bulk_number", "item_code", "brand", "reason_damaged", "thumbnail", "has_marker", "answer", "error", "model_used"]
     write_header = not results_path.exists()
 
     with open(results_path, "a", newline="", encoding="utf-8") as f:
@@ -63,7 +88,10 @@ def main():
             f.flush()
 
             marker_str = "✓" if result["has_marker"] else ("-" if not result["error"] else "!")
-            print(f"[{i+1}/{len(remaining)}] {row['brand']} {row.get('period', '')} {row['item_code']} → {marker_str}")
+            model_tag = f" [{result['model_used']}]" if result["model_used"] else ""
+            if result["model_used"] and result["model_used"] != MODELS[0]:
+                model_tag += " (폴백)"
+            print(f"[{i+1}/{len(remaining)}] {row['brand']} {row.get('period', '')} {row['item_code']} → {marker_str}{model_tag}")
 
             # 무료 티어 rate limit (15 RPM) 대응
             if (i + 1) % 14 == 0:
