@@ -63,7 +63,7 @@ def main():
             f.flush()
 
             marker_str = "✓" if result["has_marker"] else ("-" if not result["error"] else "!")
-            print(f"[{i+1}/{len(remaining)}] {row['brand']} {row['period']} {row['item_code']} → {marker_str}")
+            print(f"[{i+1}/{len(remaining)}] {row['brand']} {row.get('period', '')} {row['item_code']} → {marker_str}")
 
             # 무료 티어 rate limit (15 RPM) 대응
             if (i + 1) % 14 == 0:
